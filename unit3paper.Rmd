@@ -1,0 +1,318 @@
+---
+title: "Technical Appendix"
+author: "Brian McNair"
+date: "4/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(brglm)
+```
+
+# Outline
+
+*   Data processing
+*   Plain-Vanilla Bradley-Terry Model
+*   Penalized logistic regression
+*   Model specification accounting for game location
+    - Adapting Plain-Vanilla Bradley-Terry
+    - Adapting Penalized Logistic Regression
+*   Assessing each model
+*   Out-of-sample performance
+*   Rankings for preferred model
+*   Standard Error, Difference of Fitted Ability Coefficients
+*   Graphs and Table Creation
+
+# Data Processing
+```{r, cache=T}
+games_data <- read_csv("http://stat.lsa.umich.edu/~bbh/s485/data/CBBpretourney2021.csv")
+```
+
+# Plain-vanilla Bradley-Terry
+```{r, cache=T}
+#Without home-field advantage
+bt1 <- glm(formula = Home_Win ~ . -1 - `Youngstown State`, family = binomial, data = games_data) #Youngstown State serves as reference team
+```
+
+# Penalized Logistic Regression
+```{r, cache=T}
+pen1 <- brglm(formula = Home_Win ~ . -1 - `Youngstown State`, family = binomial, data = games_data) #Youngstown State serves as reference team
+```
+
+
+# Model specification accounting for game location
+```{r, cache=T}
+#Adapting the glm ("Plain-Vanilla") model:
+bt2 <- glm(formula = Home_Win ~ . - `Youngstown State`, family = binomial, data = games_data) #Youngstown State serves as reference team
+
+#Adapting the brglm ("Penalized") model:
+pen2 <- brglm(formula = Home_Win ~ . - `Youngstown State`, family = binomial, data = games_data) #Youngstown State serves as reference team
+```
+
+
+# Assessing Each Model
+
+Evaluating each model with in-sample accuracy rate/MSE, cross-validation accuracy rate/MSE, and likelihood ratio tests to evaluate quality of adding an intercept to our models.
+```{r, cache=T, warning=F}
+accuracy_rate <- function(model, home_field = F, d = games_data) {
+  sum_right = 0
+  N <- nrow(d)
+  intercepts <- 1:N
+  ind1 <- 1:N
+  ind2 <- 1:N
+  coef1 <- 1:N
+  coef2 <- 1:N
+  home_coef <- 1:N
+  away_coef <- 1:N
+  hw <- 1:N
+  rights <- 1:N
+  for (i in 1:N) {
+    intercept = 0
+    coeff <- model$coefficients
+    if (home_field) {
+      intercept = coeff[[1]]
+      coeff <- coeff[-1]
+    }
+    intercepts[i] <- intercept
+    team_indices = which(d[i, -1] != 0)
+    team1_coef = coeff[[team_indices[1]]]
+    ind1[i] <- d[[i, team_indices[1] + 1]]
+    ind2[i] <- d[[i, team_indices[2] + 1]]
+    team2_coef = 0
+    if (team_indices[2] != 347) { # In case one of the teams is Youngstown State
+      team2_coef = coeff[[team_indices[2]]]
+    }
+    coef1[i] <- team1_coef
+    coef2[i] = team2_coef
+    if (d[i, team_indices[1] + 1] == 1) {
+      home_coeff = team1_coef
+      away_coeff = team2_coef
+    } else {
+      away_coeff = team1_coef
+      home_coeff = team2_coef
+    }
+    home_coef[i] = home_coeff
+    away_coef[i] = away_coeff
+    home_prob = plogis(home_coeff - away_coeff + intercept)
+    away_prob = plogis(away_coeff - home_coeff - intercept)
+    was_right = (1 * (home_prob > away_prob)) == d[[i, 1]]
+    sum_right = sum_right + was_right
+    hw[i] <- d[[i, 1]]
+    rights[i] <- was_right
+  }
+  return(sum_right / N)
+}
+
+# First two models (without home court advantage) - in-sample accuracy
+accuracy_rate(bt1)
+accuracy_rate(pen1)
+
+# Last two models (with home court advantage) - in-sample accuracy
+accuracy_rate(bt2, home_field = T)
+accuracy_rate(pen2, home_field = T)
+
+
+#MSEs
+#in-sample
+(predict(bt1, data = games_data) - games_data$Home_Win)^2 %>% mean
+(predict(pen1, data = games_data) - games_data$Home_Win)^2 %>% mean
+(predict(bt2, data = games_data) - games_data$Home_Win)^2 %>% mean
+(predict(pen2, data = games_data) - games_data$Home_Win)^2 %>% mean
+
+
+
+
+# cross validation
+nfolds <- 5 #Number of cv folds
+folds <- sample(rep(1:nfolds, length.out = nrow(games_data))) # n-fold cross-validation
+
+bt1_cv_accuracies <- 1:nfolds
+pen1_cv_accuracies <- 1:nfolds
+bt2_cv_accuracies <- 1:nfolds
+pen2_cv_accuracies <- 1:nfolds
+
+bt1_cv_mses <- 1:nfolds
+pen1_cv_mses <- 1:nfolds
+bt2_cv_mses <- 1:nfolds
+pen2_cv_mses <- 1:nfolds
+
+
+for (fold in 1:nfolds) {
+  test.rows <- which(folds == fold)
+  train <- games_data[-test.rows,]
+  test <- games_data[test.rows,]
+  bt1_cv <- glm(formula = Home_Win ~ . -1 - `Youngstown State`, family = binomial, data= train)
+  bt1_cv_accuracies[fold] <- accuracy_rate(bt1_cv, d = test) 
+  
+  pen1_cv <- brglm(formula = Home_Win ~ . -1 - `Youngstown State`, family = binomial, data = train) #Youngstown State serves as reference team
+  pen1_cv_accuracies[fold] <- accuracy_rate(pen1_cv, d = test) 
+  
+  bt2_cv <- glm(formula = Home_Win ~ . - `Youngstown State`, family = binomial, data = train) #Youngstown State serves as reference team
+  bt2_cv_accuracies[fold] <- accuracy_rate(bt2_cv, home_field = T, d = test)
+  
+  
+  pen2_cv <- brglm(formula = Home_Win ~ . - `Youngstown State`, family = binomial, data = train) #Youngstown State serves as reference team
+  pen2_cv_accuracies[fold] <- accuracy_rate(pen2_cv, home_field = T, d = test)
+  
+  
+  #MSEs for fold
+  bt1_cv_mses[fold] <- (predict(bt1, data = test) - test$Home_Win)^2 %>% mean
+  pen1_cv_mses[fold] <-(predict(pen1, data = test) - test$Home_Win)^2 %>% mean
+  bt2_cv_mses[fold] <- (predict(bt2, data = test) - test$Home_Win)^2 %>% mean
+  pen2_cv_mses[fold] <- (predict(pen2, data = test) - test$Home_Win)^2 %>% mean
+  
+  
+}
+
+#CV-errors for each model:
+#Accuracies:
+mean(bt1_cv_accuracies)
+mean(pen1_cv_accuracies)
+mean(bt2_cv_accuracies)
+mean(pen2_cv_accuracies)
+
+#CV MSEs
+mean(bt1_cv_mses) 
+mean(pen1_cv_mses) 
+mean(bt2_cv_mses) 
+mean(pen2_cv_mses) 
+
+
+#Likelihood Ratio Tests
+anova(bt1, bt2, test ="LRT")$"Pr(>Chi)"[2] # is including the intercept a significantly better model? - Likelihood Ratio Test
+anova(pen1, pen2, test ="LRT")$"Pr(>Chi)"[2] # is including the intercept a significantly better model? - Likelihood Ratio Test
+```
+
+
+# Out-of-Sample Performance
+Accuracy rate and MSE are calculated for model on postseason data
+```{r, cache = T, warning=F}
+out_of_sample_games <- read_csv("http://stat.lsa.umich.edu/~bbh/s485/data/CBBposttourney2021.csv") %>% filter(postseason == 1) %>% select(-postseason)
+#Testing Errors
+# First two models (without home court advantage) - sample accuracy
+accuracy_rate(bt1, d = out_of_sample_games)
+accuracy_rate(pen1, d = out_of_sample_games)
+
+# Last two models (with home court advantage) - sample accuracy
+accuracy_rate(bt2, home_field = T, d = out_of_sample_games)
+accuracy_rate(pen2, home_field = T, d = out_of_sample_games)
+```
+
+```{r, warning=F}
+#Out-of_Sample MSE:
+(predict(bt1, data = out_of_sample_games) - out_of_sample_games$Home_Win)^2 %>% mean
+(predict(pen1, data = out_of_sample_games) - out_of_sample_games$Home_Win)^2 %>% mean
+(predict(bt2, data = out_of_sample_games) - out_of_sample_games$Home_Win)^2 %>% mean
+(predict(pen2, data = out_of_sample_games) - out_of_sample_games$Home_Win)^2 %>% mean
+```
+
+
+# Rankings for preferred model
+Rankings, as determined by coefficients.
+```{r, cache=T}
+preferred_mod <- pen2
+# Rankings will be based on coefficients
+# Top 10
+preferred_mod$coefficients %>% sort(decreasing = T) %>% .[1:10]
+# Bottom 5
+preferred_mod$coefficients %>% sort %>% .[1:5]
+# Additional teams of interest
+#UCLA:
+preferred_mod$coefficients[306]
+#Loyola-Chicago:
+preferred_mod$coefficients[147]
+#Oregon State:
+preferred_mod$coefficients[220]
+```
+
+# Standard Error, Difference of Fitted Ability Coefficients
+Calculating the standard errors of each difference in team coefficients in the dataset
+```{r, cache=T}
+N <- nrow(games_data)
+ses <- 1:N
+coeff <- preferred_mod$coefficients
+intercept = coeff[[1]]
+coeff <- coeff[-1]
+vcov_1 <- vcov(preferred_mod)
+vcov_2 <- brglm(formula = Home_Win ~ . - Xavier, family = binomial, data = games_data) %>% vcov #for getting covariances with Youngstown State- who never played Xavier
+
+for (i in 1:N) {
+    team_indices = which(games_data[i, -1] != 0)
+    if (team_indices[2] == 347) {
+      va = vcov_2[[team_indices[1], team_indices[1]]]
+      vb = vcov_2[[346, 346]]
+      cov = vcov_2[[team_indices[1], 346]]
+    } else {
+      va = vcov_1[[team_indices[1], team_indices[1]]]
+      vb = vcov_1[[team_indices[2], team_indices[2]]]
+      cov = vcov_1[[team_indices[1], team_indices[2]]]
+    }
+    ses[i] <- va - 2 * cov + vb
+}
+
+#Standard Error between coefficients of Michigan and Michigan State
+mich_ind <- which(colnames(games_data) == 'Michigan')
+msu_ind <- which(colnames(games_data) == 'Michigan State')
+va = vcov_1[[mich_ind, mich_ind]]
+vb = vcov_1[[msu_ind, msu_ind]]
+cov = vcov_1[[mich_ind, msu_ind]]
+print(va - 2 * cov + vb) #Standard Error of beta_michigan - beta_michigan_state
+```
+
+# Graph and Table Creation
+
+```{r}
+names <- colnames(games_data)[-1]
+win_pct <- 1:length(names)
+for (i in 1:(names %>% length)) {
+  data_team <- games_data[, c(1, i + 1)] 
+  names(data_team) <- c('Home_Win', 'Team')
+  data_team <- data_team %>% filter(Team != 0)
+  win_pct[i] = mean((1 * (data_team$Team == 1)) == data_team$Home_Win)
+} #Gets win percentage for every school
+
+label = vector(mode = "logical", length(names)) #True values are schools of interest
+label[which(names == 'Gonzaga')] = T
+label[which(names == 'Michigan')] = T
+label[which(names == 'Youngstown State')] = T
+label[which(names == 'UCLA')] = T
+label[which(names == 'Loyola Chicago')] = T
+label[which(names == 'Oregon State')] = T
+label[which(names == 'Baylor')] = T
+
+
+coefficient_data <- data.frame(College = c("Intercept", names),
+                     Win_Pct = c(0, win_pct),
+                     glm1 = c(0, bt1$coefficients, 0), 
+                     pen1 = c(0, pen1$coefficients, 0), 
+                     glm2 = c(bt2$coefficients, 0),
+                      pen2 = c(pen2$coefficients, 0),
+                      labels = c(T, label)) #Aggregating data
+
+subset <- coefficient_data %>% filter(labels == T)
+
+#Four plots:
+
+#coefficient_data %>% 
+ # ggplot(aes(x = Win_Pct, y = glm1, label = College)) + geom_point() + geom_point(data = subset, colour = 'blue') + geom_text(data = subset, vjust = 2, color = 'red') + xlab("School Winning Percentage") + 
+    #ylab('Coefficient from Logistic Regression Without Intercept')
+
+#coefficient_data %>% 
+  #ggplot(aes(x = Win_Pct, y = pen1, label = College)) + geom_point() + geom_point(data = subset, colour = 'blue') + geom_text(data = subset, vjust = 2, color = 'red') + xlab("School Winning Percentage") + 
+    #ylab('Coefficient from Penalized Logistic Regression Without Intercept')
+
+#coefficient_data %>% 
+  #ggplot(aes(x = Win_Pct, y = glm2, label = College)) + geom_point() + geom_point(data = subset, colour = 'blue') + geom_text(data = subset, vjust = 2, color = 'red') + xlab("School Winning Percentage") + 
+   # ylab('Coefficient from Logistic Regression With Intercept')
+
+#coefficient_data %>% 
+ # ggplot(aes(x = Win_Pct, y = pen2, label = College)) + geom_point() + geom_point(data = subset, colour = 'blue') + geom_text(data = subset, vjust = 2, color = 'red') + xlab("School Winning Percentage") + 
+  #  ylab('Coefficient from Penalized Logistic Regression With Intercept')
+
+#Rankings Table:
+#coefficient_data %>% select(College, `Parameter Value` = pen2) %>% filter(College != 'Intercept') %>%
+ # arrange(-`Parameter Value`) %>% cbind(Rank = 1:347) %>%
+  # filter(Rank <= 10 | Rank >= 343 | College == 'UCLA' | College == "Oregon State" | College == 'Loyola Chicago') %>% write_csv('bball_team_rankings.csv')
+```
+
